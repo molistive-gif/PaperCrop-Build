@@ -13,7 +13,7 @@ permissions:
 jobs:
   windows-x64:
     runs-on: windows-2022
-    timeout-minutes: 120
+    timeout-minutes: 45
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -25,33 +25,41 @@ jobs:
           if (!(Test-Path 'native/source/crop.hpp')) { throw 'Source archive is invalid' }
           if (!(Test-Path 'native/source/papercrop_cli.cpp')) { throw 'CLI source missing' }
 
-      - name: Build OpenCV dependency with vcpkg
+      - name: Download official OpenCV 4.9 Windows binaries
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $root = if ($env:VCPKG_INSTALLATION_ROOT) { $env:VCPKG_INSTALLATION_ROOT } else { 'C:\vcpkg' }
-          $vcpkg = Join-Path $root 'vcpkg.exe'
-          if (!(Test-Path $vcpkg)) { throw "vcpkg not found: $vcpkg" }
-          & $vcpkg install 'opencv4[jpeg,png,tiff]:x64-windows'
-          if ($LASTEXITCODE -ne 0) { throw 'OpenCV vcpkg installation failed' }
-          "VCPKG_ROOT_FOR_BUILD=$root" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          (Join-Path $root 'installed/x64-windows/bin') | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          $url = 'https://github.com/opencv/opencv/releases/download/4.9.0/opencv-4.9.0-windows.exe'
+          $archive = Join-Path $env:RUNNER_TEMP 'opencv-4.9.0.exe'
+          $unpack = Join-Path $env:RUNNER_TEMP 'opencv-pack'
+          Invoke-WebRequest -Uri $url -OutFile $archive -MaximumRedirection 10
+          if (!(Test-Path $archive) -or (Get-Item $archive).Length -lt 100MB) { throw 'OpenCV download incomplete' }
+          New-Item -ItemType Directory -Path $unpack -Force | Out-Null
+          $sevenZip = Join-Path $env:ProgramFiles '7-Zip/7z.exe'
+          if (!(Test-Path $sevenZip)) { throw '7-Zip is not installed on the runner' }
+          & $sevenZip x $archive "-o$unpack" -y | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw 'OpenCV extraction failed' }
+          $config = Get-ChildItem -Path $unpack -Filter 'OpenCVConfig.cmake' -File -Recurse | Select-Object -First 1
+          if (!$config) { throw 'OpenCVConfig.cmake missing after extraction' }
+          $dll = Get-ChildItem -Path $unpack -Filter 'opencv_world490.dll' -File -Recurse | Select-Object -First 1
+          if (!$dll) { throw 'opencv_world490.dll missing after extraction' }
+          "OPENCV_CONFIG_DIR=$($config.Directory.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "OPENCV_DLL_DIR=$($dll.Directory.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          $dll.Directory.FullName | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
-      - name: Configure MSVC CMake
+      - name: Configure CMake (Visual Studio 2022 x64)
         shell: pwsh
         run: |
-          $ErrorActionPreference = 'Stop'
-          $toolchain = Join-Path $env:VCPKG_ROOT_FOR_BUILD 'scripts/buildsystems/vcpkg.cmake'
-          cmake -S native -B native/build -G 'Visual Studio 17 2022' -A x64 "-DCMAKE_TOOLCHAIN_FILE=$toolchain" -DVCPKG_TARGET_TRIPLET=x64-windows -DPAPERCROP_BUILD_TESTS=OFF
+          cmake -S native -B native/build -G 'Visual Studio 17 2022' -A x64 "-DOpenCV_DIR=$env:OPENCV_CONFIG_DIR" -DPAPERCROP_BUILD_TESTS=OFF
           if ($LASTEXITCODE -ne 0) { throw 'CMake configure failed' }
 
-      - name: Compile Release
+      - name: Compile C++ Release executable
         shell: pwsh
         run: |
           cmake --build native/build --config Release --parallel 2
-          if ($LASTEXITCODE -ne 0) { throw 'C++ compile failed' }
+          if ($LASTEXITCODE -ne 0) { throw 'Native C++ compile failed' }
 
-      - name: Smoke-test crop engine
+      - name: Smoke test crop, resize, and combine
         shell: pwsh
         run: |
           Add-Type -AssemblyName System.Drawing
@@ -60,26 +68,33 @@ jobs:
           $g.Clear([System.Drawing.Color]::Black)
           $g.FillRectangle([System.Drawing.Brushes]::White, 200, 150, 800, 700)
           $g.Dispose()
-          $input = Join-Path $env:RUNNER_TEMP 'scan.bmp'
-          $output = Join-Path $env:RUNNER_TEMP 'crop.png'
-          $bmp.Save($input, [System.Drawing.Imaging.ImageFormat]::Bmp)
+          $scan = Join-Path $env:RUNNER_TEMP 'scan.bmp'
+          $crop = Join-Path $env:RUNNER_TEMP 'crop.png'
+          $resized = Join-Path $env:RUNNER_TEMP 'resized.png'
+          $combined = Join-Path $env:RUNNER_TEMP 'combined.png'
+          $bmp.Save($scan, [System.Drawing.Imaging.ImageFormat]::Bmp)
           $bmp.Dispose()
-          & 'native/bin/Release/papercrop_cli.exe' crop --input $input --output $output --width 0 --height 0 --perspective 0
-          if ($LASTEXITCODE -ne 0 -or !(Test-Path $output)) { throw 'CLI smoke test failed' }
+          $exe = 'native/bin/Release/papercrop_cli.exe'
+          & $exe crop --input $scan --output $crop --width 0 --height 0 --perspective 0
+          if ($LASTEXITCODE -ne 0 -or !(Test-Path $crop)) { throw 'Crop test failed' }
+          & $exe resize --input $crop --output $resized --max-width 595 --max-height 842
+          if ($LASTEXITCODE -ne 0 -or !(Test-Path $resized)) { throw 'Resize test failed' }
+          & $exe combine --input $resized --second $resized --output $combined
+          if ($LASTEXITCODE -ne 0 -or !(Test-Path $combined)) { throw 'Combine test failed' }
 
-      - name: Package Windows binary and DLLs
+      - name: Package EXE, OpenCV DLLs and notices
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           $dest = 'release/native/bin'
           New-Item -ItemType Directory -Path $dest -Force | Out-Null
           Copy-Item 'native/bin/Release/papercrop_cli.exe' -Destination $dest
-          $runtime = Join-Path $env:VCPKG_ROOT_FOR_BUILD 'installed/x64-windows/bin'
-          Copy-Item (Join-Path $runtime '*.dll') -Destination $dest
+          Copy-Item (Join-Path $env:OPENCV_DLL_DIR '*.dll') -Destination $dest
           Copy-Item 'native/LICENSE_PaperCrop.txt' -Destination 'release/native'
+          Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/opencv/opencv/4.9.0/LICENSE' -OutFile 'release/native/OpenCV-LICENSE.txt'
           if (!(Test-Path "$dest/papercrop_cli.exe")) { throw 'EXE missing from package' }
 
-      - name: Upload final EXE package
+      - name: Upload downloadable Windows binary
         uses: actions/upload-artifact@v4
         with:
           name: PaperCrop-CLI-Windows-x64

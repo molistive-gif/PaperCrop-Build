@@ -52,7 +52,7 @@ jobs:
       - name: Configure CMake (Visual Studio 2022 x64)
         shell: pwsh
         run: |
-          cmake -S native -B native/build -G 'Visual Studio 17 2022' -A x64 "-DOpenCV_DIR=$env:OPENCV_CONFIG_DIR" -DPAPERCROP_BUILD_TESTS=OFF
+          cmake -S native -B native/build -G 'Visual Studio 17 2022' -A x64 "-DOpenCV_DIR=$env:OPENCV_CONFIG_DIR" -DPAPERCROP_BUILD_TESTS=OFF "-DCMAKE_CXX_FLAGS=/DNOMINMAX"
           if ($LASTEXITCODE -ne 0) { throw 'CMake configure failed' }
 
       - name: Compile C++ Release executable

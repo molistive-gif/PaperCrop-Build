@@ -1,0 +1,88 @@
+name: Build PaperCrop CLI for Windows
+on:
+  push:
+    branches: [main]
+    paths:
+      - "papercrop-native-source.zip"
+      - ".github/workflows/build-papercrop-windows.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-x64:
+    runs-on: windows-2022
+    timeout-minutes: 120
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Extract C++ sources
+        shell: pwsh
+        run: |
+          Expand-Archive -LiteralPath 'papercrop-native-source.zip' -DestinationPath . -Force
+          if (!(Test-Path 'native/source/crop.hpp')) { throw 'Source archive is invalid' }
+          if (!(Test-Path 'native/source/papercrop_cli.cpp')) { throw 'CLI source missing' }
+
+      - name: Build OpenCV dependency with vcpkg
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = if ($env:VCPKG_INSTALLATION_ROOT) { $env:VCPKG_INSTALLATION_ROOT } else { 'C:\vcpkg' }
+          $vcpkg = Join-Path $root 'vcpkg.exe'
+          if (!(Test-Path $vcpkg)) { throw "vcpkg not found: $vcpkg" }
+          & $vcpkg install 'opencv4[jpeg,png,tiff]:x64-windows' --no-default-features
+          if ($LASTEXITCODE -ne 0) { throw 'OpenCV vcpkg installation failed' }
+          "VCPKG_ROOT_FOR_BUILD=$root" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          (Join-Path $root 'installed/x64-windows/bin') | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Configure MSVC CMake
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $toolchain = Join-Path $env:VCPKG_ROOT_FOR_BUILD 'scripts/buildsystems/vcpkg.cmake'
+          cmake -S native -B native/build -G 'Visual Studio 17 2022' -A x64 "-DCMAKE_TOOLCHAIN_FILE=$toolchain" -DVCPKG_TARGET_TRIPLET=x64-windows -DPAPERCROP_BUILD_TESTS=OFF
+          if ($LASTEXITCODE -ne 0) { throw 'CMake configure failed' }
+
+      - name: Compile Release
+        shell: pwsh
+        run: |
+          cmake --build native/build --config Release --parallel 2
+          if ($LASTEXITCODE -ne 0) { throw 'C++ compile failed' }
+
+      - name: Smoke-test crop engine
+        shell: pwsh
+        run: |
+          Add-Type -AssemblyName System.Drawing
+          $bmp = New-Object System.Drawing.Bitmap(1200, 1000)
+          $g = [System.Drawing.Graphics]::FromImage($bmp)
+          $g.Clear([System.Drawing.Color]::Black)
+          $g.FillRectangle([System.Drawing.Brushes]::White, 200, 150, 800, 700)
+          $g.Dispose()
+          $input = Join-Path $env:RUNNER_TEMP 'scan.bmp'
+          $output = Join-Path $env:RUNNER_TEMP 'crop.png'
+          $bmp.Save($input, [System.Drawing.Imaging.ImageFormat]::Bmp)
+          $bmp.Dispose()
+          & 'native/bin/Release/papercrop_cli.exe' crop --input $input --output $output --width 0 --height 0 --perspective 0
+          if ($LASTEXITCODE -ne 0 -or !(Test-Path $output)) { throw 'CLI smoke test failed' }
+
+      - name: Package Windows binary and DLLs
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $dest = 'release/native/bin'
+          New-Item -ItemType Directory -Path $dest -Force | Out-Null
+          Copy-Item 'native/bin/Release/papercrop_cli.exe' -Destination $dest
+          $runtime = Join-Path $env:VCPKG_ROOT_FOR_BUILD 'installed/x64-windows/bin'
+          Copy-Item (Join-Path $runtime '*.dll') -Destination $dest
+          Copy-Item 'native/LICENSE_PaperCrop.txt' -Destination 'release/native'
+          if (!(Test-Path "$dest/papercrop_cli.exe")) { throw 'EXE missing from package' }
+
+      - name: Upload final EXE package
+        uses: actions/upload-artifact@v4
+        with:
+          name: PaperCrop-CLI-Windows-x64
+          path: release/**
+          retention-days: 30
+          if-no-files-found: error

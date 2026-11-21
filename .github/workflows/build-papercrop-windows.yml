@@ -93,7 +93,7 @@ jobs:
           & $exe combine --input $resized --second $resized --output $combined
           if ($LASTEXITCODE -ne 0 -or !(Test-Path $combined)) { throw 'Combine test failed' }
 
-      - name: Smoke test landscape A3 split and multiple right-side photos
+      - name: Smoke test landscape A3 split with FOUR separate right-side photos
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -101,9 +101,11 @@ jobs:
           $bmp = New-Object System.Drawing.Bitmap(4960, 3508)
           $g = [System.Drawing.Graphics]::FromImage($bmp)
           $g.Clear([System.Drawing.Color]::Black)
-          # Left A4 is resized as-is; two separate photos appear on right A4.
-          $g.FillRectangle([System.Drawing.Brushes]::White, 2850, 500, 550, 735)
-          $g.FillRectangle([System.Drawing.Brushes]::White, 3900, 1900, 540, 720)
+          # Left A4 is resized as-is; FOUR photos at different positions on right A4.
+          $g.FillRectangle([System.Drawing.Brushes]::White, 2740, 400, 420, 600)
+          $g.FillRectangle([System.Drawing.Brushes]::White, 3520, 500, 450, 650)
+          $g.FillRectangle([System.Drawing.Brushes]::White, 2890, 1930, 430, 610)
+          $g.FillRectangle([System.Drawing.Brushes]::White, 3980, 2250, 470, 650)
           $g.Dispose()
           $input = Join-Path $env:RUNNER_TEMP 'a3_test.bmp'
           $output = Join-Path $env:RUNNER_TEMP 'a3_left.png'
@@ -113,7 +115,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'A3 split command failed' }
           if (!(Test-Path $output)) { throw 'Left half not saved' }
           $right = @(Get-ChildItem -Path $env:RUNNER_TEMP -Filter 'a3_left_right_*.png')
-          if ($right.Count -ne 2) { throw "Expected exactly 2 right crops, found $($right.Count)" }
+          if ($right.Count -ne 4) { throw "Expected exactly 4 right crops, found $($right.Count)" }
           $leftImg = [System.Drawing.Image]::FromFile($output)
           if ($leftImg.Width -ne 595 -or $leftImg.Height -ne 842) {
             throw "Left resize incorrect: $($leftImg.Width)x$($leftImg.Height)"

@@ -51,14 +51,14 @@ static double intersectionOverSmaller(const cv::Rect& a, const cv::Rect& b) {
 
 static std::vector<cv::Rect> rightSideDocuments(const cv::Mat& right) {
     double scale = std::min(1.0, 1900.0 / std::max(right.cols, right.rows));
-    cv::Mat small;
+    cv::Mat preview;
     if (scale < 1.0)
-        cv::resize(right, small, cv::Size(), scale, scale, cv::INTER_AREA);
+        cv::resize(right, preview, cv::Size(), scale, scale, cv::INTER_AREA);
     else
-        small = right;
+        preview = right;
 
     cv::Mat gray, blurred, edges, contrast, mask;
-    cv::cvtColor(small, gray, cv::COLOR_BGR2GRAY);
+    cv::cvtColor(preview, gray, cv::COLOR_BGR2GRAY);
     cv::GaussianBlur(gray, blurred, cv::Size(5, 5), 0);
     const int bg = borderMedian(blurred);
     cv::absdiff(blurred, cv::Scalar(bg), contrast);
@@ -77,7 +77,7 @@ static std::vector<cv::Rect> rightSideDocuments(const cv::Mat& right) {
     auto collect = [&](const cv::Mat& binary, int retrieval) {
         std::vector<std::vector<cv::Point>> contours;
         cv::findContours(binary.clone(), contours, retrieval, cv::CHAIN_APPROX_SIMPLE);
-        const double imageArea = double(small.rows) * small.cols;
+        const double imageArea = double(preview.rows) * preview.cols;
         for (const auto& c : contours) {
             if (c.size() < 4) continue;
             cv::Rect b = cv::boundingRect(c);
@@ -87,7 +87,7 @@ static std::vector<cv::Rect> rightSideDocuments(const cv::Mat& right) {
             if (double(b.width) / b.height < 0.25 || double(b.width) / b.height > 4.0)
                 continue;
             // Ignore long scanner artefacts and the edge of the entire A4 half.
-            if (b.width >= small.cols * 0.96 || b.height >= small.rows * 0.96)
+            if (b.width >= preview.cols * 0.96 || b.height >= preview.rows * 0.96)
                 continue;
             std::vector<cv::Point> hull;
             cv::convexHull(c, hull);
@@ -116,8 +116,8 @@ static std::vector<cv::Rect> rightSideDocuments(const cv::Mat& right) {
     }
 
     std::vector<cv::Rect> full;
-    const double sx = double(right.cols) / small.cols;
-    const double sy = double(right.rows) / small.rows;
+    const double sx = double(right.cols) / preview.cols;
+    const double sy = double(right.rows) / preview.rows;
     for (const auto& b : chosen) {
         int x0 = std::max(0, int(std::floor(b.x * sx)) - 2);
         int y0 = std::max(0, int(std::floor(b.y * sy)) - 2);

@@ -98,7 +98,8 @@ static std::vector<cv::Rect> rightSideDocuments(const cv::Mat& right) {
     };
     collect(mask, cv::RETR_EXTERNAL);
     collect(edges, cv::RETR_LIST);
-    // Largest outline wins over internal picture features and duplicate borders.
+    // Keep every separate qualifying document; largest outline wins over nested
+    // internal picture features and duplicate borders. No fixed output count.
     std::sort(proposals.begin(), proposals.end(), [](const auto& a, const auto& b) {
         return a.area() > b.area();
     });
@@ -112,7 +113,6 @@ static std::vector<cv::Rect> rightSideDocuments(const cv::Mat& right) {
             }
         }
         if (!duplicate) chosen.push_back(b);
-        if (chosen.size() >= 30) break;
     }
 
     std::vector<cv::Rect> full;

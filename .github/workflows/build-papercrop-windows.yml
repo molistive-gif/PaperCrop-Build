@@ -5,6 +5,8 @@ on:
     paths:
       - "papercrop-native-source.zip"
       - ".github/workflows/build-papercrop-windows.yml"
+      - "extensions/**"
+      - "integration/**"
   workflow_dispatch:
 
 permissions:
@@ -24,6 +26,13 @@ jobs:
           Expand-Archive -LiteralPath 'papercrop-native-source.zip' -DestinationPath . -Force
           if (!(Test-Path 'native/source/crop.hpp')) { throw 'Source archive is invalid' }
           if (!(Test-Path 'native/source/papercrop_cli.cpp')) { throw 'CLI source missing' }
+
+      - name: Enable A3-split C++ extension
+        shell: pwsh
+        run: |
+          Move-Item -Path 'native/source/papercrop_cli.cpp' -Destination 'native/source/papercrop_cli_legacy.cpp' -Force
+          Copy-Item -Path 'extensions/papercrop_cli.cpp' -Destination 'native/source/papercrop_cli.cpp' -Force
+          if (!(Test-Path 'native/source/papercrop_cli_legacy.cpp')) { throw 'Legacy source missing' }
 
       - name: Download official OpenCV 4.9 Windows binaries
         shell: pwsh
@@ -83,6 +92,38 @@ jobs:
           if ($LASTEXITCODE -ne 0 -or !(Test-Path $resized)) { throw 'Resize test failed' }
           & $exe combine --input $resized --second $resized --output $combined
           if ($LASTEXITCODE -ne 0 -or !(Test-Path $combined)) { throw 'Combine test failed' }
+
+      - name: Smoke test landscape A3 split and multiple right-side photos
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Add-Type -AssemblyName System.Drawing
+          $bmp = New-Object System.Drawing.Bitmap(4960, 3508)
+          $g = [System.Drawing.Graphics]::FromImage($bmp)
+          $g.Clear([System.Drawing.Color]::Black)
+          # Left A4 is resized as-is; two separate photos appear on right A4.
+          $g.FillRectangle([System.Drawing.Brushes]::White, 2850, 500, 550, 735)
+          $g.FillRectangle([System.Drawing.Brushes]::White, 3900, 1900, 540, 720)
+          $g.Dispose()
+          $input = Join-Path $env:RUNNER_TEMP 'a3_test.bmp'
+          $output = Join-Path $env:RUNNER_TEMP 'a3_left.png'
+          $bmp.Save($input, [System.Drawing.Imaging.ImageFormat]::Bmp)
+          $bmp.Dispose()
+          & 'native/bin/Release/papercrop_cli.exe' crop --input $input --output $output --a3-mode auto --max-width 595 --max-height 842
+          if ($LASTEXITCODE -ne 0) { throw 'A3 split command failed' }
+          if (!(Test-Path $output)) { throw 'Left half not saved' }
+          $right = @(Get-ChildItem -Path $env:RUNNER_TEMP -Filter 'a3_left_right_*.png')
+          if ($right.Count -ne 2) { throw "Expected exactly 2 right crops, found $($right.Count)" }
+          $leftImg = [System.Drawing.Image]::FromFile($output)
+          if ($leftImg.Width -ne 595 -or $leftImg.Height -ne 842) {
+            throw "Left resize incorrect: $($leftImg.Width)x$($leftImg.Height)"
+          }
+          $leftImg.Dispose()
+          foreach ($f in $right) {
+            $img = [System.Drawing.Image]::FromFile($f.FullName)
+            if ($img.Width -gt 595 -or $img.Height -gt 842) { throw "Right crop too large: $($f.Name)" }
+            $img.Dispose()
+          }
 
       - name: Package EXE, OpenCV DLLs and notices
         shell: pwsh

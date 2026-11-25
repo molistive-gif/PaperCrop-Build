@@ -32,6 +32,7 @@ jobs:
         run: |
           Move-Item -Path 'native/source/papercrop_cli.cpp' -Destination 'native/source/papercrop_cli_legacy.cpp' -Force
           Copy-Item -Path 'extensions/papercrop_cli.cpp' -Destination 'native/source/papercrop_cli.cpp' -Force
+          Copy-Item -Path 'extensions/robust_detector.hpp' -Destination 'native/source/robust_detector.hpp' -Force
           if (!(Test-Path 'native/source/papercrop_cli_legacy.cpp')) { throw 'Legacy source missing' }
 
       - name: Download official OpenCV 4.9 Windows binaries
@@ -126,6 +127,51 @@ jobs:
             if ($img.Width -gt 595 -or $img.Height -gt 842) { throw "Right crop too large: $($f.Name)" }
             $img.Dispose()
           }
+
+      - name: Regression test actual-like 200 DPI A4 photo and A3 split
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Add-Type -AssemblyName System.Drawing
+          $exe = 'native/bin/Release/papercrop_cli.exe'
+
+          # Dark A4 scanning bed, small portrait and bright scanner-frame edge.
+          $a4 = New-Object System.Drawing.Bitmap(1646, 2331)
+          $a4.SetResolution(200, 200)
+          $g = [System.Drawing.Graphics]::FromImage($a4)
+          $g.Clear([System.Drawing.Color]::FromArgb(12,12,12))
+          $g.FillRectangle([System.Drawing.Brushes]::White, 200, 140, 245, 335)
+          $g.FillRectangle([System.Drawing.Brushes]::DarkBlue, 220, 190, 205, 255)
+          $g.FillRectangle([System.Drawing.Brushes]::White, 0, 0, 4, 2331)
+          $g.Dispose()
+          $a4input = Join-Path $env:RUNNER_TEMP 'production_like_a4.jpg'
+          $a4out = Join-Path $env:RUNNER_TEMP 'production_like_a4_crop.png'
+          $a4.Save($a4input, [System.Drawing.Imaging.ImageFormat]::Jpeg)
+          $a4.Dispose()
+          & $exe crop --input $a4input --output $a4out --a3-mode auto --max-width 595 --max-height 842
+          if ($LASTEXITCODE -ne 0 -or !(Test-Path $a4out)) { throw 'Photo recovery failed' }
+          $photo = [System.Drawing.Image]::FromFile($a4out)
+          if ($photo.Width -gt 420 -or $photo.Height -gt 490 -or $photo.Width -lt 170 -or $photo.Height -lt 200) {
+            throw "Unexpected dark A4 crop: $($photo.Width)x$($photo.Height)"
+          }
+          $photo.Dispose()
+
+          # Same scanner metadata (200 dpi) but A3 paper: 3296x2331 pixels.
+          $a3 = New-Object System.Drawing.Bitmap(3296, 2331)
+          $a3.SetResolution(200,200)
+          $g = [System.Drawing.Graphics]::FromImage($a3)
+          $g.Clear([System.Drawing.Color]::Black)
+          $g.FillRectangle([System.Drawing.Brushes]::White, 1940, 300, 260, 365)
+          $g.FillRectangle([System.Drawing.Brushes]::White, 2530, 1440, 280, 360)
+          $g.Dispose()
+          $a3input = Join-Path $env:RUNNER_TEMP 'production_like_a3.jpg'
+          $a3out = Join-Path $env:RUNNER_TEMP 'production_like_a3_left.png'
+          $a3.Save($a3input, [System.Drawing.Imaging.ImageFormat]::Jpeg)
+          $a3.Dispose()
+          & $exe crop --input $a3input --output $a3out --a3-mode auto --max-width 595 --max-height 842
+          if ($LASTEXITCODE -ne 0 -or !(Test-Path $a3out)) { throw '200DPI A3 split failed' }
+          $pieces = @(Get-ChildItem -Path $env:RUNNER_TEMP -Filter 'production_like_a3_left_right_*.png')
+          if ($pieces.Count -ne 2) { throw "Expected 2 right-side pieces for 200DPI A3, got $($pieces.Count)" }
 
       - name: Package EXE, OpenCV DLLs and notices
         shell: pwsh

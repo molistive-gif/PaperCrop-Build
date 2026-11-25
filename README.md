@@ -25,3 +25,16 @@ The GitHub Actions workflow [Build PaperCrop CLI for Windows](../../actions/work
 Source extension: `extensions/papercrop_cli.cpp`. The workflow retains upstream `crop.hpp` and the original CLI code from `papercrop-native-source.zip`, compiling the extension as a wrapper.
 
 To make the frontend list all multi-document outputs (not just the left half), update the `backend/processing/image_cropper.py` adapter to collect files matching `<output_stem>_right_*.jpg` after the CLI completes. The optional `PAPERCROP_A3_MODE` setting can be forwarded from `backend/processing/native_engine.py` to `--a3-mode`.
+
+## 2026-11-25: reliability fixes based on a private three-day scan sample
+
+- The original border-only black/white background estimator can misclassify a black scanner bed when the scan edges have bright scanner streaks. The new `extensions/robust_detector.hpp` estimates background from the dominant image interior and recovers small 3x4 photo boundaries.
+- The native `crop` path attempts dark-background recovery, preserving the exact image pixels in the recovered ROI before optional resizing. When no reliable region exists, it retains the upstream PaperCrop path.
+- Light-document detection rejects very thin, obviously suspicious crop slices instead of silently reporting a successful document crop. These cases still require manual review where sheet and background edges are indistinguishable.
+- For JPEG images with JFIF DPI, automatic landscape-A3 identification now uses approximate physical dimensions (420 x 297 mm). This handles the 3296x2331 at 200 DPI samples that the old 4150-pixel-only cutoff missed. `--a3-mode force` and `off` remain available.
+- Landscape A3 still splits into left-resize and independent multi-crops on the right. There is no fixed count of right-side outputs.
+- The workflow checks crop/resize/combine, four disjoint right-half documents, 200-DPI A4 small-photo recovery, and 200-DPI A3 automatic splitting.
+
+No customer scan, portrait, identity document or other private source image was uploaded to this repository. All GitHub Actions regression images are synthetic.
+
+**Installation:** Download `PaperCrop-CLI-Windows-x64` from the successful run's Artifacts and extract it under the root of the Python frontend, creating `native/bin/papercrop_cli.exe` next to the shipped OpenCV DLLs. The frontend requires the existing C++ bridge and multi-output Python adapter.
